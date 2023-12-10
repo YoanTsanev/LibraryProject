@@ -27,7 +27,7 @@ SELECT TOP 3
     COUNT(*) AS books_borrowed
 FROM
     librarybranch lb
-JOIN borrowedbook bb ON lb.librarybranch_id = bb.librarybranch_id -- <- трябва да се оправи това
+JOIN borrowedbook bb ON lb.librarybranch_id = bb.librarian_id
 GROUP BY
     lb.librarybranch_id, lb.librarybranch_name
 ORDER BY
@@ -96,4 +96,77 @@ GO
 -- 3.7 Изпълнете delete statement, който да изтрие записите на членовете на библиотеката, които никога не са заемали книги.
 DELETE FROM member
 WHERE member_id NOT IN (SELECT DISTINCT member_id FROM borrowedbook)
-GO -- < внимавай като тестваш
+GO
+
+
+-- 3.8 Създайте procedure за заемане на книги, която да приема като параметри member_id, copy_id, librarian_id, due_date и да обновява автоматично данните в свързаните с отдаването на книги таблици. Трябва да има проверка дали даденото копие е налично и да извежда съобщение „Book borrowed successfully“ или „Book is not available for borrowing“ съответно ако е налично или не.
+CREATE OR ALTER PROCEDURE borrow_book 
+    @p_member_id INT,
+    @p_copy_id INT,
+    @p_librarian_id INT,
+    @p_due_date DATE
+AS
+BEGIN
+    -- Check if the book is available
+    IF EXISTS (SELECT 1 FROM inventar WHERE inventar_id = @p_copy_id AND inventar_quantity > 0)
+    BEGIN
+        -- Borrow the book
+        INSERT INTO borrowedbook (borrowedbook_startdate, borrowedbook_enddate, borrowedbook_isreturned, librarian_id, member_id)
+        VALUES (GETDATE(), @p_due_date, 'N', @p_librarian_id, @p_member_id);
+
+        -- Mark the copy as borrowed
+        UPDATE inventar
+        SET inventar_quantity = inventar_quantity - 1
+        WHERE inventar_id = @p_copy_id;
+
+        PRINT 'Book borrowed successfully.';
+    END
+    ELSE
+    BEGIN
+        PRINT 'Book is not available for borrowing.';
+    END
+END;
+GO
+
+
+-- 3.9 Създайте procedure за връщане на книги, която да приема като параметри borrow_id и return_date. Да проверява дали книгата е върната в срок и ако не, да налага глоба от 5 лева на ден за всеки просрочен ден. Да обновява автоматично информацията в свързаните с процедурата таблици. Ако е създадена глоба, да слага автоматично статус Unpaid и срок на глобата 1 месец от датата на втъщане. Ако няма наложена глоба да изписва съобщение „Book returned on time. No fine imposed.“ , а ако пък е наложена такава то да изписва съобщение „Book returned late. Fine of {fine amount} imposed.“
+CREATE OR ALTER PROCEDURE return_book 
+    @p_borrow_id INT,
+    @p_return_date DATE
+AS
+BEGIN
+    DECLARE @v_fine_amount INT;
+
+    -- Check for overdue and calculate fine
+    SELECT @v_fine_amount = 
+        CASE
+            WHEN @p_return_date > borrowedbook_enddate THEN
+                5 * DATEDIFF(DAY, borrowedbook_enddate, @p_return_date)
+            ELSE
+                0
+        END
+    FROM borrowedbook
+    WHERE borrowedbook_id = @p_borrow_id;
+
+    -- Update information about book return
+    UPDATE borrowedbook
+    SET borrowedbook_enddate = @p_return_date,
+        borrowedbook_isreturned = 'Y'
+    WHERE borrowedbook_id = @p_borrow_id;
+
+    -- If there is a fine, create a record in the fines table
+    IF @v_fine_amount > 0
+    BEGIN
+        INSERT INTO finerecourd (fine_amount, fine_reason, fine_status, fine_dateofpaid, member_id)
+        VALUES (@v_fine_amount, 'Late return', 'Unpaid', DATEADD(MONTH, 1, @p_return_date), (SELECT member_id FROM borrowedbook WHERE borrowedbook_id = @p_borrow_id));
+
+        PRINT 'Book returned late. Fine of ' + CAST(@v_fine_amount AS VARCHAR(10)) + ' imposed.';
+    END
+    ELSE
+    BEGIN
+        PRINT 'Book returned on time. No fine imposed.';
+    END
+END;
+GO
+
+
