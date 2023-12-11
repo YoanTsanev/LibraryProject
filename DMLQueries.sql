@@ -110,9 +110,11 @@ BEGIN
     -- Check if the book is available
     IF EXISTS (SELECT 1 FROM inventar WHERE inventar_id = @p_copy_id AND inventar_quantity > 0)
     BEGIN
+		DECLARE @next_id INT = (SELECT MAX(borrowedbook_id) FROM borrowedbook) -- ISNULL((SELECT TOP 1 borrowedbook_id FROM borrowedbook GROUP BY borrowedbook_id DESC), 0);
+
         -- Borrow the book
-        INSERT INTO borrowedbook (borrowedbook_startdate, borrowedbook_enddate, borrowedbook_isreturned, librarian_id, member_id)
-        VALUES (GETDATE(), @p_due_date, 'N', @p_librarian_id, @p_member_id);
+        INSERT INTO borrowedbook (borrowedbook_id , borrowedbook_startdate, borrowedbook_enddate, borrowedbook_isreturned, librarian_id, member_id)
+        VALUES (@next_id, GETDATE(), @p_due_date, 'n', @p_librarian_id, @p_member_id);
 
         -- Mark the copy as borrowed
         UPDATE inventar
@@ -125,7 +127,7 @@ BEGIN
     BEGIN
         PRINT 'Book is not available for borrowing.';
     END
-END;
+END
 GO
 
 
@@ -135,38 +137,33 @@ CREATE OR ALTER PROCEDURE return_book
     @p_return_date DATE
 AS
 BEGIN
-    DECLARE @v_fine_amount INT;
-
-    -- Check for overdue and calculate fine
-    SELECT @v_fine_amount = 
-        CASE
-            WHEN @p_return_date > borrowedbook_enddate THEN
-                5 * DATEDIFF(DAY, borrowedbook_enddate, @p_return_date)
-            ELSE
-                0
-        END
-    FROM borrowedbook
-    WHERE borrowedbook_id = @p_borrow_id;
+    DECLARE @v_fine_amount INT = 0
+	DECLARE @borrowed_book_end_date DATE = (SELECT borrowedbook_enddate FROM borrowedbook WITH (NOLOCK) WHERE borrowedbook_id = @p_borrow_id)
+	
+	IF @p_return_date > @borrowed_book_end_date
+		BEGIN
+			SET @v_fine_amount = 5 * DATEDIFF(DAY, @borrowed_book_end_date, @p_return_date)
+		END
 
     -- Update information about book return
     UPDATE borrowedbook
     SET borrowedbook_enddate = @p_return_date,
-        borrowedbook_isreturned = 'Y'
+        borrowedbook_isreturned = 'y'
     WHERE borrowedbook_id = @p_borrow_id;
 
     -- If there is a fine, create a record in the fines table
     IF @v_fine_amount > 0
     BEGIN
-        INSERT INTO finerecourd (fine_amount, fine_reason, fine_status, fine_dateofpaid, member_id)
+        INSERT INTO finerecord (fine_amount, fine_reason, fine_status, fine_dateofpaid, member_id)
         VALUES (@v_fine_amount, 'Late return', 'Unpaid', DATEADD(MONTH, 1, @p_return_date), (SELECT member_id FROM borrowedbook WHERE borrowedbook_id = @p_borrow_id));
 
         PRINT 'Book returned late. Fine of ' + CAST(@v_fine_amount AS VARCHAR(10)) + ' imposed.';
     END
     ELSE
-    BEGIN
-        PRINT 'Book returned on time. No fine imposed.';
-    END
-END;
+		BEGIN
+			PRINT 'Book returned on time. No fine imposed.';
+		END
+END
 GO
 
 
